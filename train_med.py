@@ -85,7 +85,7 @@ def train(opt):
     # dataset loaders
     my_collate = utils.sorted_collate if opt.model=='lstm' else utils.unsorted_collate
     yelp_train_loader = DataLoader(yelp_train, opt.batch_size,
-            shuffle=True, collate_fn=my_collate)
+            shuffle=True, collate_fn = my_collate)
     yelp_train_loader_Q = DataLoader(yelp_train,
                                      opt.batch_size,
                                      shuffle=True, collate_fn=my_collate)
@@ -118,7 +118,7 @@ def train(opt):
         
         config = BertConfig(
         hidden_size = opt.hidden_size,
-        max_position_embeddings = 2048,
+        max_position_embeddings = 3932,
         num_attention_heads = 12,
         num_hidden_layers = opt.F_layers,
         vocab_size = 1976)
@@ -184,8 +184,6 @@ def train(opt):
                     mimic_train_iter_Q = iter(mimic_train_loader_Q)
                     q_inputs_ch, _ = next(mimic_train_iter_Q)
 
-                #if opt.model == 'transformer':
-                    #src_mask = F.generate_square_subsequent_mask(q_inputs_en[0].size(0)).to(opt.device)
                 features_en = F(q_inputs_en)
                 #print(features_en.size())
                 o_en_ad = Q(features_en)
@@ -219,21 +217,9 @@ def train(opt):
             o_en_sent = P(features_en)
             targets_en = targets_en.unsqueeze(1)
             targets_en = targets_en.to(torch.float32)
+            pos_weight = torch.tensor([4.0]).to(opt.device)
 
-            #o_en_sent.to(torch.float32)
-            #print(o_en_sent)
-            #print(targets_en)
-            #targets_en[targets_en < 0.0] = 0.0
-            #targets_en[targets_en > 1.0] = 1.0
-
-            #o_en_sent = o_en_sent.squeeze(1)
-            #o_en_sent = o_en_sent.to(torch.float32)
-            #targets_en = targets_en.type_as(o_en_sent)
-
-            #o_en_sent[o_en_sent < 0.0] = 0.0
-            #o_en_sent[o_en_sent > 1.0] = 1.0
-
-            loss = nn.BCEWithLogitsLoss()
+            loss = nn.BCEWithLogitsLoss(pos_weight = pos_weight)
             l_en_sent = loss(o_en_sent, targets_en)
             l_en_sent.backward(retain_graph=True)
             o_en_ad = Q(features_en)
@@ -242,26 +228,10 @@ def train(opt):
             # training accuracy
             _, pred = torch.max(o_en_sent, 1)
             total += targets_en.size(0)
-            #print(total)
-            #print(targets_en)
-            #print(o_en_sent)
-            #print(pred)
-            #print((o_en_sent == targets_en))
             correct += (o_en_sent == targets_en).sum().item()
             
             y_score+=[o_en_sent.cpu().detach().numpy()]
             y_true+=[targets_en.cpu().detach().numpy()]
-            #print(y_score)
-            #fpr, tpr, _ = metrics.roc_curve(np.concatenate(y_true, axis = 0), np.concatenate(y_score, axis = 0))
-            #roc_auc = metrics.auc(fpr, tpr)
-            #print('roc_auc',roc_auc )
-
-            
-
-            
-            #print((pred == targets_en).sum().item())
-            #print(correct)
-
             features_ch = F(inputs_ch)
             o_ch_ad = Q(features_ch)
             l_ch_ad = torch.mean(o_ch_ad)
@@ -273,11 +243,9 @@ def train(opt):
         
 
         log.info('Ending epoch {}'.format(epoch+1))
+        
         fpr, tpr, _ = metrics.roc_curve(np.concatenate(y_true, axis = 0), np.concatenate(y_score, axis = 0))
         roc_auc = metrics.auc(fpr, tpr)
-
-
-
 
         # logs
         if sum_en_q[0] > 0:

@@ -38,11 +38,21 @@ class TransformerFeatureExtractor(BertPreTrainedModel):
         output_hidden_states=None,
         return_dict=None,
     ):
-        input_ids, lengths = input_ids
+        input_ids, lengths, attention_mask = input_ids
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        #self.bert.set_input_embeddings(self.vocab)
         inputs_embeds =self.encoder(input_ids)
-        #print('mapped',inputs_embeds)
+
+        #generate attention mask...
+        
+
+        #attention_mask = torch.full((len(input_ids), torch.max(lengths)), 0, dtype=torch.long)
+        #for i, row in enumerate(input_ids):
+            #attention_mask[i][-len(row):] = torch.ones([1,len(row)], dtype=torch.long, device = opt.device)
+
+
+        #print('input ',input_ids[0])  
+        #print('mask ', attention_mask[0])
+
         outputs = self.bert(
             input_ids = None,
             attention_mask=attention_mask,
@@ -57,7 +67,9 @@ class TransformerFeatureExtractor(BertPreTrainedModel):
 
         #print(outputs.hidden_states)
         #quit(0)
-        pooled_output = torch.mean(outputs[0],dim=1)
+        #print(outputs[0])
+        #exit(0)
+        pooled_output = torch.sum(outputs[0],dim=1)
         #print(pooled_output.size())
 
         #pooled_output = outputs[1]
