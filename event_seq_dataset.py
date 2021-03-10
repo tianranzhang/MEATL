@@ -1,0 +1,85 @@
+import numpy as np
+import pickle
+import torch
+from torch.utils.data import Dataset
+
+def pad_trun_sequences(seq, len_seq):
+    new_seq = list()
+    #print('pad_trun_sequences length ', len(seq),'...')
+    if len_seq==-1:
+        len_seq = max([len(element) for element in seq])
+    for i in seq:
+        #print(len(i))
+        i = [j for j in i.split(' ') if j not in ['', 'nan']]
+        length= len(i)
+        if length>len_seq:
+             new_seq =  new_seq + [i[length-len_seq-1:-1]]
+        if length<=len_seq:
+             new_seq =  new_seq + [['[pad]']*(len_seq-length) +i]
+    return [' '.join(i) for i in new_seq]     
+
+class EventDataset(Dataset):
+    def __init__(self, X_file, Y_file, num_train_lines, vocab, max_seq_len, update_vocab):
+        self.raw_X = []
+        self.X = []
+        with open(X_file) as inf:
+            cnt = 0
+            for line in inf:
+                #print(line)
+                words = line.rstrip().split()##pad_trun_sequences([line],max_seq_len)[0].rstrip().split()
+                if max_seq_len > 0:
+                    words = words[-max_seq_len:]
+                self.raw_X.append(words)
+                if update_vocab:
+                    for w in words:
+                        vocab.add_word(w)
+                # save lengths
+                self.X.append(([vocab.lookup(w) for w in words], len(words)))
+                cnt += 1
+                if num_train_lines > 0 and cnt >= num_train_lines:
+                    break
+
+        self.max_seq_len = max_seq_len
+        if isinstance(Y_file, str):
+            self.Y = (torch.from_numpy(np.loadtxt(Y_file))).long()
+        else:
+            self.Y = Y_file
+        if num_train_lines > 0:
+            self.X = self.X[:num_train_lines]
+            self.Y = self.Y[:num_train_lines]
+        self.num_labels = 1
+        # self.Y = self.Y.to(opt.device)
+        assert len(self.X) == len(self.Y), 'X and Y have different lengths'
+        print('Loaded Yelp dataset of {} samples'.format(len(self.X)))
+
+    def __len__(self):
+        return len(self.Y)
+
+    def __getitem__(self, idx):
+        return (self.X[idx], self.Y[idx])
+
+    def set_max_seq_len(self, max_seq_len):
+        self.X = [(x[0][:max_seq_len], min(x[1], max_seq_len)) for x in self.X]
+        self.max_seq_len = max_seq_len
+
+    def get_max_seq_len(self):
+        if not hasattr(self, 'max_seq_len'):
+            self.max_seq_len = max([x[1] for x in self.X])
+        return self.max_seq_len
+
+def get_event_seq_datasets(vocab,
+                      X_train_filename,
+                      Y_train_filename,
+                      num_train_lines,
+                      X_val_filename,
+                      Y_val_filename,
+                      X_test_filename,
+                      Y_test_filename,
+                      max_seq_len):
+    train_dataset = EventDataset(X_train_filename, Y_train_filename,
+            num_train_lines, vocab, max_seq_len, update_vocab=True)
+    valid_dataset = EventDataset(X_val_filename, Y_val_filename,
+            0, vocab, max_seq_len, update_vocab=True)
+    test_dataset = EventDataset(X_test_filename, Y_test_filename,
+            0, vocab, max_seq_len, update_vocab=True)
+    return train_dataset, valid_dataset, test_dataset
