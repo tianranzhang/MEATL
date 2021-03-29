@@ -8,6 +8,8 @@ import numpy as np
 
 
 from transformers import BertConfig
+from transformers import  AdamW
+from torch.optim.lr_scheduler import LambdaLR
 
 import torch
 import torch.nn as nn
@@ -16,9 +18,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchnet.meter import ConfusionMeter
 from torchnet.meter import AUCMeter
-from ignite.metrics import Precision
 from sklearn import metrics
-
 
 from data_prep.yelp_dataset import get_yelp_datasets
 from data_prep.chn_hotel_dataset import get_chn_htl_datasets
@@ -31,23 +31,42 @@ import utils
 
 random.seed(opt.random_seed)
 torch.manual_seed(opt.random_seed)
+np.random.seed(opt.random_seed)
 
-
+with torch.no_grad():
+    torch.cuda.empty_cache()
 torch.cuda.empty_cache()
 import gc
 gc.collect()
 
-def weighted_binary_cross_entropy(output, target, weights=None):
-        
-    if weights is not None:
-        assert len(weights) == 2
-        
-        loss = weights[1] * (target * torch.log(output)) + \
-               weights[0] * ((1 - target) * torch.log(1 - output))
-    else:
-        loss = target * torch.log(output) + (1 - target) * torch.log(1 - output)
+def get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps, last_epoch=-1):
+    """
+    Create a schedule with a learning rate that decreases linearly from the initial lr set in the optimizer to 0, after
+    a warmup period during which it increases linearly from 0 to the initial lr set in the optimizer.
 
-    return torch.neg(torch.mean(loss))
+    Args:
+        optimizer (:class:`~torch.optim.Optimizer`):
+            The optimizer for which to schedule the learning rate.
+        num_warmup_steps (:obj:`int`):
+            The number of steps for the warmup phase.
+        num_training_steps (:obj:`int`):
+            The total number of training steps.
+        last_epoch (:obj:`int`, `optional`, defaults to -1):
+            The index of the last epoch when resuming training.
+
+    Return:
+        :obj:`torch.optim.lr_scheduler.LambdaLR` with the appropriate schedule.
+    """
+
+    def lr_lambda(current_step: int):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        return max(
+            0.0, float(num_training_steps - current_step) / float(max(1, num_training_steps - num_warmup_steps))
+        )
+
+    return LambdaLR(optimizer, lr_lambda, last_epoch)
+
 
 # save logs
 if not os.path.exists(opt.model_save_file):
@@ -68,8 +87,8 @@ def train(opt):
     vocab = Vocab(opt.emb_filename)
     # datasets
     log.info(f'Loading data...')
-    yelp_X_train = os.path.join(opt.src_data_dir, 'X_train.aligned.txt')
-    yelp_Y_train = os.path.join(opt.src_data_dir, 'Y_train.aligned.txt')
+    yelp_X_train = os.path.join(opt.src_data_dir, 'X_all.aligned.txt')
+    yelp_Y_train = os.path.join(opt.src_data_dir, 'Y_all.aligned.txt')
     yelp_X_val = os.path.join(opt.src_data_dir, 'X_val.aligned.txt')
     yelp_Y_val = os.path.join(opt.src_data_dir, 'Y_val.aligned.txt')
     yelp_X_test = os.path.join(opt.src_data_dir, 'X_test.aligned.txt')
@@ -97,15 +116,15 @@ def train(opt):
     # dataset loaders
     my_collate = utils.sorted_collate if opt.model=='lstm' else utils.unsorted_collate
     yelp_train_loader = DataLoader(yelp_train, opt.batch_size,
-            shuffle=True, collate_fn = my_collate)
+            shuffle=True, drop_last=True, collate_fn = my_collate)
     yelp_train_loader_Q = DataLoader(yelp_train,
                                      opt.batch_size,
-                                     shuffle=True, collate_fn=my_collate)
+                                     shuffle=True, drop_last=True, collate_fn=my_collate)
     mimic_train_loader = DataLoader(mimic_train, opt.batch_size,
-            shuffle=True, collate_fn=my_collate)
+            shuffle=True, drop_last=True, collate_fn=my_collate)
     mimic_train_loader_Q = DataLoader(mimic_train,
                                     opt.batch_size,
-                                    shuffle=True, collate_fn=my_collate)
+                                    shuffle=True, drop_last=True, collate_fn=my_collate)
     yelp_train_iter_Q = iter(yelp_train_loader_Q)
     mimic_train_iter = iter(mimic_train_loader)
     mimic_train_iter_Q = iter(mimic_train_loader_Q)
@@ -132,10 +151,10 @@ def train(opt):
         
         config = BertConfig(
         hidden_size = vocab.emb_size,
-        max_position_embeddings = 3932,
-        num_attention_heads = 12,
+        max_position_embeddings = opt.max_pos_emb,
+        num_attention_heads = opt.head_num,
         num_hidden_layers = opt.F_layers,
-        vocab_size = 1976)
+        vocab_size = opt.vocab_size)
         F = TransformerFeatureExtractor(vocab, opt.hidden_size, config = config)#TransformerModel(vocab, opt.emb_size, opt.head_num, opt.hidden_size, opt.F_layers,opt.dropout)
     else:
         raise Exception('Unknown model')
@@ -143,14 +162,30 @@ def train(opt):
             opt.dropout, opt.P_bn)
     Q = LanguageDetector(opt.Q_layers, opt.hidden_size, opt.dropout, opt.Q_bn)
     F, P, Q = F.to(opt.device), P.to(opt.device), Q.to(opt.device)
-    optimizer = optim.Adam(list(F.parameters()) + list(P.parameters()),
-                           lr=opt.learning_rate)
-    optimizerQ = optim.Adam(Q.parameters(), lr=opt.Q_learning_rate)
+    
+    
+    optimizer = AdamW(list(F.parameters()) + list(P.parameters()),
+                           lr=opt.learning_rate, weight_decay=0.01)
+    optimizerQ = AdamW(Q.parameters(), lr=opt.Q_learning_rate, weight_decay=0.01)
+    
+    num_training_steps = len(yelp_train_loader) * opt.max_epoch
+    num_warmup_steps = opt.num_warmup_steps
+    num_warmup_steps_Q = opt.num_warmup_steps_Q
+    
+    scheduler = get_linear_schedule_with_warmup(
+    optimizer, num_warmup_steps=num_warmup_steps, 
+    num_training_steps = num_training_steps)
+    scheduler_Q= get_linear_schedule_with_warmup(
+    optimizerQ, num_warmup_steps=num_warmup_steps_Q, 
+    num_training_steps = num_training_steps)
+
+
 
     # training
-    best_acc = 0.0
     best_AUC = 0.0
-    best_prec = 0.0
+    best_prAUC = 0.0
+    best_AUC_t = 0.0
+    best_prAUC_t = 0.0
     for epoch in range(opt.max_epoch):
         F.train()
         P.train()
@@ -213,6 +248,8 @@ def train(opt):
                 sum_ch_q = (sum_ch_q[0] + 1, sum_ch_q[1] + l_ch_ad.item())
 
                 optimizerQ.step()
+                scheduler_Q.step()
+
 
             # F&P iteration
             utils.unfreeze_net(F)
@@ -228,22 +265,33 @@ def train(opt):
             
             features_en = F(inputs_en)
             o_en_sent = P(features_en)
-
-            #m = nn.Sigmoid()
-            #o_en_sent = m(o_en_sent)
             
             #targets_en = targets_en.unsqueeze(1)
             #targets_en = targets_en.to(torch.float32)
-            pos_weight = torch.tensor([1.0,4.0]).to(opt.device)
+            pos_weight = torch.tensor([0.2,0.8]).to(opt.device)
 
             loss = nn.CrossEntropyLoss(weight = pos_weight)#nn.BCEWithLogitsLoss(pos_weight = pos_weight)
-            #print(targets_en)
             l_en_sent = loss(o_en_sent, targets_en)
             l_en_sent.backward(retain_graph=True)
+
+            o_en_ad = Q(features_en)
+            l_en_ad = torch.mean(o_en_ad)
+            (opt.lambd*l_en_ad).backward(retain_graph=True)
+            
+            # training accuracy
             total += targets_en.size(0)
-            y_score+=[o_en_sent[:,1].cpu().detach().numpy()]
-            y_true+=[targets_en.cpu().detach().numpy()]
+
+            y_score +=[o_en_sent[:,1].cpu().detach().numpy()]
+            y_true +=[targets_en.cpu().detach().numpy()]
+
+            features_ch = F(inputs_ch)
+            o_ch_ad = Q(features_ch)
+            l_ch_ad = torch.mean(o_ch_ad)
+            (-opt.lambd*l_ch_ad).backward()
+            
+
             optimizer.step()
+            scheduler.step()
     
         # end of epoch
         
@@ -253,30 +301,53 @@ def train(opt):
         fpr, tpr, _ = metrics.roc_curve(np.concatenate(y_true, axis = 0), np.concatenate(y_score, axis = 0))
         roc_auc = metrics.auc(fpr, tpr)
 
-        # logs
         if sum_en_q[0] > 0:
             log.info(f'Average English Q output: {sum_en_q[1]/sum_en_q[0]}')
             log.info(f'Average Foreign Q output: {sum_ch_q[1]/sum_ch_q[0]}')
-        # evaluate
-        #log.info('Training Accuracy: {}%'.format(100.0*correct/total))
+
         log.info('Training AUC: {}%'.format(100.0*roc_auc))
-        log.info('Evaluating English Validation set:')
-        evaluate(opt, yelp_valid_loader, F, P)
-        log.info('Evaluating Foreign validation set:')
+        log.info('***Trained on all UCLA data available***')
+        #log.info('Evaluating UCLA Validation set:')
+        #evaluate(opt, yelp_valid_loader, F, P)
+        log.info('Evaluating MIMIC validation set:')
         (AUC, prauc) = evaluate(opt, mimic_valid_loader, F, P)
+        log.info('Evaluating MIMIC test set:')
+        (AUC_t, prauc_t) = evaluate(opt, mimic_test_loader, F, P)
+
         if AUC > best_AUC:
-            log.info(f'New Best Foreign validation accuracy: {AUC}')
+            log.info(f'New Best MIMIC validation accuracy: {AUC}')
             best_AUC = AUC
+            best_prAUC = prauc
+            best_AUC_t = AUC_t
+            best_prAUC_t = prauc_t
             torch.save(F.state_dict(),
                     '{}/netF_epoch_{}.pth'.format(opt.model_save_file, epoch))
             torch.save(P.state_dict(),
                     '{}/netP_epoch_{}.pth'.format(opt.model_save_file, epoch))
             torch.save(Q.state_dict(),
                     '{}/netQ_epoch_{}.pth'.format(opt.model_save_file, epoch))
-        log.info('Evaluating Foreign test set:')
-        evaluate(opt, mimic_test_loader, F, P)
-    log.info(f'Best Foreign validation Acc: {best_AUC}')
 
+    #log metrics/parameters   
+    import csv    
+    with open("../param_search/exp_logs_ATN.csv", 'a', newline='') as csvFile:
+        writer = csv.DictWriter(csvFile, fieldnames=['val_AUC','val_prAUC','test_AUC', 'test_prAUC', 'random_emb',  'fix_emb', 'dropout', 'p_lr',    
+                'q_lr','nc','lambd', 'F_layer','P_layer','Q_layer','max_seq_len','hidden_size','emb_size','emb_filename', 'fix_unk',  'max_pos_emb',
+                 'vocab_num', 'num_head','optimizer', 'p_weight_decay','q_weight_decay',  'num_warmup','num_warmup_Q', 'max_epoch','target_data' ])
+        writer.writerow({'val_AUC': str(best_AUC),'val_prAUC': str(best_prAUC),'test_AUC': str(best_AUC_t),  'test_prAUC': str(best_prAUC_t),  
+                'random_emb': opt.random_emb,  'fix_emb': opt.fix_emb, 'dropout': str(opt.dropout), 'p_lr': str(opt.learning_rate),    
+                'q_lr': str(opt.Q_learning_rate),'nc': str(opt.n_critic),  'lambd': str(opt.lambd),  'F_layer':str(opt.F_layers), 
+                'P_layer':str(opt.P_layers), 'Q_layer': str(opt.Q_layers), 'max_seq_len':str(opt.max_seq_len), 
+                'hidden_size': str(opt.hidden_size), 'emb_size':str(opt.emb_size), 'emb_filename': opt.emb_filename, 'fix_unk': opt.fix_unk,  
+                'max_pos_emb':str(opt.max_pos_emb) , 'vocab_num': str(opt.vocab_size),   'num_head': str(opt.head_num),'optimizer': 'AdamW', 
+                'p_weight_decay': str(0.01),'q_weight_decay': str(0.01),  'num_warmup': str(opt.num_warmup_steps), 'num_warmup_Q': str(opt.num_warmup_steps_Q), 
+                'max_epoch': str(opt.max_epoch), 'target_data' : opt.tgt_data_dir})
+    csvFile.close()
+
+    log.info(f'Best UCLA validation Acc: {best_AUC}')
+
+    for i in [F,P,Q,features_en,o_en_ad,l_en_ad,features_ch, o_ch_ad, l_ch_ad, 
+    inputs_en, inputs_ch, pos_weight, loss, sum_ch_q, sum_en_q]:
+        del i
 
 def evaluate(opt, loader, F, P):
     F.eval()
@@ -286,28 +357,15 @@ def evaluate(opt, loader, F, P):
     total = 0
     y_score = []
     y_true = []
-    precision = Precision()
     confusion = ConfusionMeter(opt.num_labels)
     auc = AUCMeter()
     with torch.no_grad():
         for inputs, targets in tqdm(it):
-            #print(inputs[0])
             outputs = P(F(inputs))
-            #m = nn.Sigmoid()
-            #outputs = m(outputs)
-            #_, pred = torch.max(outputs, 1)
+            
             targets = targets.unsqueeze(1)
             targets = targets.to(torch.float32)
-            #targets.data[targets.data < 0.0] = 0.0
-            #targets.data[targets.data > 1.0] = 1.0
-
-            #pred.data[pred.data < 0.0] = 0.0
-            #pred.data[pred.data >= 0.0] = 1.0
-
-            #print(pred.data)
-            #print(targets.data)
-            #precision.update((pred.data,targets.data))
-            #confusion.add(pred.data, targets.data)
+    
             y_score+=[outputs[:,1].cpu().detach().numpy()]
             y_true+=[targets.cpu().detach().numpy()]
             #auc.add(outputs, targets)
@@ -323,6 +381,10 @@ def evaluate(opt, loader, F, P):
     #log.info('Accuracy on {} samples: {}%'.format(total, 100.0*accuracy))
     log.info('AUC on {} samples: {}%'.format(total, 100.00*roc_auc))
     log.info('prAUC on {} samples: {}%'.format(total, 100.00*prauc))
+
+    del outputs
+    del targets
+
 
     #log.info('Precision on {} samples: {}%'.format(total, precision.compute() ))
     #log.debug(confusion.conf)

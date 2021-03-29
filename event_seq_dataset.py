@@ -3,21 +3,6 @@ import pickle
 import torch
 from torch.utils.data import Dataset
 
-def pad_trun_sequences(seq, len_seq):
-    new_seq = list()
-    #print('pad_trun_sequences length ', len(seq),'...')
-    if len_seq==-1:
-        len_seq = max([len(element) for element in seq])
-    for i in seq:
-        #print(len(i))
-        i = [j for j in i.split(' ') if j not in ['', 'nan']]
-        length= len(i)
-        if length>len_seq:
-             new_seq =  new_seq + [i[length-len_seq-1:-1]]
-        if length<=len_seq:
-             new_seq =  new_seq + [['[pad]']*(len_seq-length) +i]
-    return [' '.join(i) for i in new_seq]     
-
 class EventDataset(Dataset):
     def __init__(self, X_file, Y_file, num_train_lines, vocab, max_seq_len, update_vocab):
         self.raw_X = []

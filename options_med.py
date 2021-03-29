@@ -13,14 +13,14 @@ parser.add_argument('--max_seq_len', type=int, default=0) # set to 0 to not trun
 parser.add_argument('--random_seed', type=int, default=1)
 parser.add_argument('--model_save_file', default='./save/adan')
 parser.add_argument('--batch_size', type=int, default=16)
-parser.add_argument('--learning_rate', type=float, default=0.0005)
+parser.add_argument('--learning_rate', type=float, default=0.00005)
 parser.add_argument('--Q_learning_rate', type=float, default=0.0005)
 # path to BWE
-parser.add_argument('--emb_filename', default='../data/ucla_mimic_emb/emb_aligned.txt')
-parser.add_argument('--fix_emb', action='store_true')
-parser.add_argument('--random_emb', action='store_true')
+parser.add_argument('--emb_filename', default='../data/ucla_mimic_emb/emb_aligned_with_mimic_loinc.txt')
+parser.add_argument('--fix_emb', default = False)
+parser.add_argument('--random_emb', default= True)
 # use a fixed <unk> token for all words without pretrained embeddings when building vocab
-parser.add_argument('--fix_unk', action='store_true')
+parser.add_argument('--fix_unk', default = True)
 parser.add_argument('--emb_size', type=int, default=768)
 parser.add_argument('--model', default='cnn')  # dan or lstm or cnn
 # for LSTM model
@@ -31,13 +31,16 @@ parser.add_argument('--sum_pooling/', dest='sum_pooling', action='store_true')
 parser.add_argument('--avg_pooling/', dest='sum_pooling', action='store_false')
 # for CNN model
 parser.add_argument('--kernel_num', type=int, default=400)
-parser.add_argument('--kernel_sizes', type=int, nargs='+', default=[3,4,5])
+parser.add_argument('--kernel_sizes', type=int, nargs='+', default=[3,4,4])
 parser.add_argument('--hidden_size', type=int, default=900)
 
 #for transformer encoder
 parser.add_argument('--head_num', type=int, default=12)
-#parser.add_argument('--t_hidden_size', type=int, default=512)
-
+parser.add_argument('--t_hidden_size', type=int, default=768)
+parser.add_argument('--num_warmup_steps', type=int, default=500)
+parser.add_argument('--num_warmup_steps_Q', type=int, default=3122)
+parser.add_argument('--max_pos_emb', type=int, default=1024)
+parser.add_argument('--vocab_size', type=int, default=2370)
 
 
 parser.add_argument('--F_layers', type=int, default=1)

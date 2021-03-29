@@ -14,14 +14,17 @@ import torch.nn.functional as F
 from transformers import BertPreTrainedModel,BertModel
 
 class TransformerFeatureExtractor(BertPreTrainedModel):
-    def __init__(self, vocab, config):
+    def __init__(self, vocab, hidden_size, config):
         super().__init__(config)
         self.num_labels = config.num_labels
-        self.encoder =  vocab.init_embed_layer()
+        print(self.num_labels)
+        self.word_emb =  vocab.init_embed_layer()
+        self.emb_size = config.hidden_size
 
         self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+        self.hidden_size = hidden_size
 
         self.init_weights()
 
@@ -37,21 +40,12 @@ class TransformerFeatureExtractor(BertPreTrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
+        output_dim = None,
     ):
         input_ids, lengths, attention_mask = input_ids
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        inputs_embeds =self.encoder(input_ids)
-
-        #generate attention mask...
         
-
-        #attention_mask = torch.full((len(input_ids), torch.max(lengths)), 0, dtype=torch.long)
-        #for i, row in enumerate(input_ids):
-            #attention_mask[i][-len(row):] = torch.ones([1,len(row)], dtype=torch.long, device = opt.device)
-
-
-        #print('input ',input_ids[0])  
-        #print('mask ', attention_mask[0])
+        inputs_embeds = self.word_emb(input_ids)
 
         outputs = self.bert(
             input_ids = None,
@@ -64,12 +58,11 @@ class TransformerFeatureExtractor(BertPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+        
+        pooled_output = outputs[1]#outputs[1]#outputs[0][:,-1,:]#torch.sum(outputs[0], dim = 1)
+        #m = nn.Linear(self.emb_size, self.hidden_size)
+        #pooled_output = m(pooled_output)
 
-        #print(outputs.hidden_states)
-        #quit(0)
-        #print(outputs[0])
-        #exit(0)
-        pooled_output = torch.sum(outputs[0],dim=1)
         #print(pooled_output.size())
 
         #pooled_output = outputs[1]
@@ -87,9 +80,9 @@ class TransformerFeatureExtractor(BertPreTrainedModel):
                 #loss_fct = CrossEntropyLoss()
                 #loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
 
-        if not return_dict:
-            output = (logits,) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
+        #if not return_dict:
+            #output = (logits,) + outputs[2:]
+            #return ((loss,) + output) if loss is not None else output
 
         return pooled_output#outputs.hidden_states[-1],1
             #SequenceClassifierOutput(
@@ -98,70 +91,6 @@ class TransformerFeatureExtractor(BertPreTrainedModel):
             #hidden_states=outputs.hidden_states,
             #attentions=outputs.attentions,
         #)
-
-
-class TransformerModel(nn.Module):
-#vocab: the vocabulary object with 
-#ntoken: The size of vocabulary
-#ninp: embedding dimension
-#nhead: the number of heads in the multiheadattention models
-#nhid: the dimension of the feedforward network model in nn.TransformerEncoder
-#nlayers: the number of nn.TransformerEncoderLayer in nn.TransformerEncoder
-    def __init__(self, vocab, ninp, nhead, nhid, nlayers, dropout=0.5):
-        super(TransformerModel, self).__init__()
-        from torch.nn import TransformerEncoder, TransformerEncoderLayer
-        self.model_type = 'Transformer'
-
-        self.pos_encoder = PositionalEncoding(ninp, dropout)
-        #self.word_emb = vocab.init_embed_layer()
-        encoder_layers = TransformerEncoderLayer(ninp, nhead, nhid, dropout)
-        self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
-        self.encoder = vocab.init_embed_layer()#nn.Embedding(ntoken, ninp)
-        self.ninp = ninp
-        ntoken = len(vocab.embeddings)
-        self.decoder = nn.Linear(ninp, ntoken)
-
-        self.init_weights()
-
-    def generate_square_subsequent_mask(self, sz):
-        mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
-        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
-        return mask
-
-    def init_weights(self):
-        initrange = 0.1
-        self.encoder.weight.data.uniform_(-initrange, initrange)
-        self.decoder.bias.data.zero_()
-        self.decoder.weight.data.uniform_(-initrange, initrange)
-
-    def forward(self, src):#, src_mask):
-        src, lengths = src
-        src = self.transformer_encoder(src)# * math.sqrt(self.ninp)
-        src = self.pos_encoder(src)
-        #output = self.transformer_encoder(src, src_mask)
-        src = self.decoder(src)
-        return src
-
-# Source: https://pytorch.org/tutorials/beginner/transformer_tutorial
-class PositionalEncoding(nn.Module):
-
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        x = x + self.pe[:x.size(0), :]
-        return self.dropout(x)
-
-
 
 class DANFeatureExtractor(nn.Module):
     def __init__(self,
@@ -193,6 +122,7 @@ class DANFeatureExtractor(nn.Module):
             self.fcnet.add_module('f-relu-{}'.format(i), nn.ReLU())
 
     def forward(self, input):
+        input = (input[0], input[1])
         return self.fcnet(self.avg(input))
 
 
@@ -218,7 +148,7 @@ class LSTMFeatureExtractor(nn.Module):
             self.attn = DotAttentionLayer(hidden_size)
 
     def forward(self, input):
-        data, lengths = input
+        data, lengths, attention_mask = input
         lengths_list = lengths.tolist()
         batch_size = len(data)
         embeds = self.word_emb(data)
@@ -268,7 +198,7 @@ class CNNFeatureExtractor(nn.Module):
             self.fcnet.add_module('f-relu-{}'.format(i), nn.ReLU())
 
     def forward(self, input):
-        data, lengths = input
+        data, lengths, attention_mask = input
         batch_size = len(data)
         embeds = self.word_emb(data)
         # conv
@@ -299,7 +229,8 @@ class SentimentClassifier(nn.Module):
             self.net.add_module('p-relu-{}'.format(i), nn.ReLU())
 
         self.net.add_module('p-linear-final', nn.Linear(hidden_size, output_size))
-        self.net.add_module('p-sigmoid', nn.Sigmoid())
+        self.net.add_module('p-softmax', nn.Softmax())
+        #self.net.add_module('p-sigmoid', nn.Sigmoid())
         #self.net.add_module('p-logsoftmax', nn.LogSoftmax(dim=-1))
 
     def forward(self, input):

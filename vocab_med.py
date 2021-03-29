@@ -17,7 +17,7 @@ class Vocab:
             assert len(parts) == 2
             vs, es = int(parts[0]), int(parts[1])
             #print(self.emb_size)
-            assert int(es) == self.emb_size
+            ###assert int(es) == self.emb_size
             # add an UNK token
             self.pretrained = np.empty((vs, es), dtype=np.float)
             self.pt_v2wvocab = []
@@ -46,7 +46,7 @@ class Vocab:
         self.add_word(self.eos_tok)
         print('about to set eos_idx!!!!')
         opt.eos_idx = self.eos_idx = self.w2vvocab[self.eos_tok]
-        self.embeddings[self.eos_idx][:] = 0
+        self.embeddings[self.eos_idx][:] = 0.0
 
     def base_form(word):
         return word.strip().lower()

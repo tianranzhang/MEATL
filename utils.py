@@ -53,7 +53,7 @@ def pad(x, y, eos_idx, sort):
         sort_len, sort_idx = lengths.sort(0, descending=True)
         padded_inputs = padded_inputs.index_select(0, sort_idx)
         y = y.index_select(0, sort_idx)
-        return (padded_inputs, sort_len), y
+        return (padded_inputs, sort_len, attention_mask), y
     else:
         #print(padded_inputs.size())
         #exit(0)
